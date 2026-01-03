@@ -78,7 +78,7 @@ The collector is a Flask API that runs Playwright (for SG200) and HTTP scraping 
 
 ### Auth controls (optional)
 
-This deployment uses HTTP between Connect and the collector. You can enable two optional controls:
+If you are not using TLS between Connect and the collector, you can enable two optional controls:
 
 - **IP allowlist**: set `SG200_COLLECTOR_ALLOWED_IPS` to a comma-separated list of allowed client IPs.
 - **Shared token**: set `SG200_COLLECTOR_TOKEN`, and send `X-Collector-Token` in requests.
