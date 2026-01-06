@@ -6,11 +6,11 @@ This repository contains:
 - **Forescout Connect app packages** for SG200 and Netgear that call the external collector.
 - Packaged zip artifacts for each app version.
 
-## Repository layout
+## Repository layout (high level)
 
 ```
 .
-├── scraper/                # Collector service(s) + scraping clients
+├── scraper/                # Collector service + scraper client modules
 │   ├── collector.py        # Flask API for SG200 + Netgear
 │   ├── scrapers/           # Scraper client modules loaded lazily
 │   │   ├── sg200_client.py # Playwright scraper for SG200 dynamic MAC table
