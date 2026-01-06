@@ -1,11 +1,13 @@
+import importlib
 import logging
 import os
+<<<<<<< HEAD
+from typing import Callable, Dict, Optional, Tuple
+=======
 from typing import Dict, Optional, Tuple
+>>>>>>> origin/main
 
 from flask import Flask, request, jsonify
-
-from sg200_client import fetch_mac_table
-from netgear_client import fetch_netgear_devices
 
 app = Flask(__name__)
 
@@ -37,6 +39,25 @@ def _authorize_request() -> Tuple[bool, Optional[Tuple[Dict[str, str], int]]]:
 
     return True, None
 
+<<<<<<< HEAD
+
+def _load_scraper(scraper_module: str, func_name: str) -> Callable:
+    try:
+        module = importlib.import_module(f"scrapers.{scraper_module}")
+    except ModuleNotFoundError as exc:
+        raise RuntimeError(
+            f"Scraper module '{scraper_module}' is not available."
+        ) from exc
+
+    try:
+        return getattr(module, func_name)
+    except AttributeError as exc:
+        raise RuntimeError(
+            f"Scraper module '{scraper_module}' does not export '{func_name}'."
+        ) from exc
+
+=======
+>>>>>>> origin/main
 
 @app.route("/health", methods=["GET"])
 def health():
@@ -82,12 +103,60 @@ def mac_table():
     logger.info("Request for SG200 MAC table from %s", switch_ip)
 
     try:
+        fetch_mac_table = _load_scraper("sg200_client", "fetch_mac_table")
         entries = fetch_mac_table(switch_ip, username, password)
     except Exception as e:
         logger.exception("Error fetching SG200 MAC table from %s", switch_ip)
         return jsonify({"error": str(e)}), 500
 
     return jsonify({"switch_ip": switch_ip, "entries": entries}), 200
+
+
+@app.route("/sg200/system-summary", methods=["POST"])
+def system_summary():
+    """
+    POST /sg200/system-summary
+    JSON body:
+        {
+          "ip": "192.168.0.221",
+          "user": "cisco",
+          "pass": "cisco"
+        }
+
+    Response:
+        {
+          "switch_ip": "192.168.0.221",
+          "host_name": "GARAGE-SG200",
+          "model_description": "...",
+          ...
+        }
+    """
+    authorized, error = _authorize_request()
+    if not authorized:
+        return jsonify(error[0]), error[1]
+
+    data = request.get_json(silent=True) or {}
+
+    switch_ip = data.get("ip")
+    username = data.get("user")
+    password = data.get("pass")
+
+    if not switch_ip or not username or not password:
+        return (
+            jsonify({"error": "ip, user, and pass fields are required in JSON body"}),
+            400,
+        )
+
+    logger.info("Request for SG200 system summary from %s", switch_ip)
+
+    try:
+        fetch_system_summary = _load_scraper("sg200_client", "fetch_system_summary")
+        summary = fetch_system_summary(switch_ip, username, password)
+    except Exception as e:
+        logger.exception("Error fetching SG200 system summary from %s", switch_ip)
+        return jsonify({"error": str(e)}), 500
+
+    return jsonify(summary), 200
 
 
 @app.route("/netgear/access-control", methods=["POST"])
@@ -136,6 +205,7 @@ def netgear_access_control():
     logger.info("Request for Netgear access-control devices from %s", router_ip)
 
     try:
+        fetch_netgear_devices = _load_scraper("netgear_client", "fetch_netgear_devices")
         result = fetch_netgear_devices(router_ip, username, password)
     except Exception as e:
         logger.exception("Error fetching Netgear devices from %s", router_ip)

@@ -6,15 +6,15 @@ This repository contains:
 - **Forescout Connect app packages** for SG200 and Netgear that call the external collector.
 - Packaged zip artifacts for each app version.
 
-## Repository layout
+## Repository layout (high level)
 
 ```
 .
-├── scraper/                # Collector service(s) + scraping clients
+├── scraper/                # Collector service + scraper client modules
 │   ├── collector.py        # Flask API for SG200 + Netgear
-│   ├── collector-sg200-only.py
-│   ├── sg200_client.py     # Playwright scraper for SG200 dynamic MAC table
-│   ├── netgear_client.py   # HTTP scraper for Netgear access control list
+│   ├── scrapers/           # Scraper client modules loaded lazily
+│   │   ├── sg200_client.py # Playwright scraper for SG200 dynamic MAC table
+│   │   └── netgear_client.py # HTTP scraper for Netgear access control list
 │   └── *.har.txt           # HTTP capture references
 ├── SG200/                  # SG200 Connect app artifacts
 │   └── app/
@@ -50,6 +50,25 @@ The collector is a Flask API that runs Playwright (for SG200) and HTTP scraping 
     }
     ```
 
+- `POST /sg200/system-summary`
+  - Body:
+    ```json
+    {
+      "ip": "192.168.0.221",
+      "user": "cisco",
+      "pass": "cisco"
+    }
+    ```
+  - Response:
+    ```json
+    {
+      "switch_ip": "192.168.0.221",
+      "host_name": "GARAGE-SG200",
+      "model_description": "26-port Gigabit Smart Switch",
+      "serial_number": "DNI161702F3"
+    }
+    ```
+
 - `POST /netgear/access-control`
   - Body:
     ```json
@@ -78,7 +97,7 @@ The collector is a Flask API that runs Playwright (for SG200) and HTTP scraping 
 
 ### Auth controls (optional)
 
-If you are not using TLS between Connect and the collector, you can enable two optional controls:
+This deployment uses HTTP between Connect and the collector. You can enable two optional controls:
 
 - **IP allowlist**: set `SG200_COLLECTOR_ALLOWED_IPS` to a comma-separated list of allowed client IPs.
 - **Shared token**: set `SG200_COLLECTOR_TOKEN`, and send `X-Collector-Token` in requests.
