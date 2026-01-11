@@ -17,9 +17,9 @@ This repository contains:
 ├── scraper/                # Collector service + scraper client modules
 │   ├── collector.py        # Flask API for SG200 + Netgear
 │   ├── scrapers/           # Scraper client modules loaded lazily
-│   │   ├── sg200_client.py # Playwright scraper for SG200 dynamic MAC table
-│   │   └── netgear_client.py # HTTP scraper for Netgear access control list
-│   └── dev/                # HAR/capture references for development
+│       ├── sg200_client.py # Playwright scraper for SG200 dynamic MAC table
+│       └── netgear_client.py # HTTP scraper for Netgear access control list
+│   
 ├── SG200/                  # SG200 Connect app artifacts
 │   └── app/
 │       ├── data/           # system.conf, property.conf, sg200_test.py, sg200_poll.py
