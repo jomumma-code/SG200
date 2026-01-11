@@ -14,19 +14,34 @@ This repository contains:
 
 ```
 .
-├── scraper/                # Collector service + scraper client modules
-│   ├── collector.py        # Flask API for SG200 + Netgear
-│   ├── scrapers/           # Scraper client modules loaded lazily
-│   │   ├── sg200_client.py # Playwright scraper for SG200 dynamic MAC table
-│   │   └── netgear_client.py # HTTP scraper for Netgear access control list
-│   └── dev/                # HAR/capture references for development
-├── SG200/                  # SG200 Connect app artifacts
-│   └── app/
-│       ├── data/           # system.conf, property.conf, sg200_test.py, sg200_poll.py
-│       └── SG200-*.zip     # Versioned packaged app bundles
-└── NETGEAR/                # Netgear Connect app artifacts
-    ├── data/               # system.conf, property.conf, netgear_ac_test.py, netgear_ac_poll.py
-    └── NETGEAR-*.zip       # Versioned packaged app bundles
+├── collector/                      # Collector service + scraper client modules
+│   ├── collector.py                # Collector entrypoint
+│   └── scrapers/                   # Scraper client modules
+│       ├── __init__.py
+│       ├── netgear_client.py
+│       └── sg200_client.py
+├── NETGEAR/                        # Netgear Connect app artifacts
+│   ├── app/
+│   │   └── NETGEAR-0.1.1.zip       # Packaged app bundle
+│   └── data/                       # Config + scripts
+│       ├── netgear_ac_poll.py
+│       ├── netgear_ac_test.py
+│       ├── property.conf
+│       └── system.conf
+├── SG200/                          # SG200 Connect app artifacts
+│   ├── app/
+│   │   └── SG200-0.1.4.zip         # Packaged app bundle (older)
+│   ├── data/                       # Config + scripts
+│   │   ├── property.conf
+│   │   ├── sg200_poll.py
+│   │   ├── sg200_test.py
+│   │   └── system.conf
+│   └── SG200-0.2.0.zip             # Packaged app bundle (newer, at SG200/ root)
+├── docs/
+│   └── architecture.svg
+├── .gitignore
+└── README.md
+
 ```
 
 ## Quick start
