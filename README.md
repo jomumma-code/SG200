@@ -68,7 +68,9 @@ Unzip the collector.zip to the home directory of the collector app, then:
 ```powershell
 cd C:\path\to\SG200\collector
 python -m venv .venv
-.\.venv\Scripts\Activate.ps1
+powershell .\.venv\Scripts\Activate.ps1
+or using CMD:
+.\.venv\Scripts\activate 
 python -m pip install --upgrade pip
 python -m pip install flask requests playwright beautifulsoup4
 python -m playwright install chromium
