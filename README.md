@@ -1,343 +1,306 @@
-# SG200 / Netgear Collector + Forescout Connect Apps
+# SG200 Collector + Forescout Connect Apps
 
 This repository contains:
 
-- **Playwright-based collectors** for Cisco SG200 switches and Netgear routers.
-- **Forescout Connect app packages** for SG200 and Netgear that call the external collector.
+- **Playwright-based collector** for Cisco SG200 switches.
+- **Forescout Connect app package** for SG200 that calls the external collector.
 - Packaged zip artifacts for each app version.
 
-## Architecture overview
 
 ![Architecture diagram](docs/architecture.svg)
 
+This project provides an HTTP collector service that Forescout Connect apps can call to inventory Cisco SG200 switches and enrich endpoint records in the Forescout eyeSight console.
+
+Primary outcomes in eyeSight:
+- Switch attribution for endpoints (which switch observed the MAC).
+- Network attachment context (VLAN and switch interface name) mapped into device properties for policy, tagging, and response workflows.
+
+## Key capabilities (value in Forescout eyeSight)
+
+- Enriches eyeSight endpoint records with switch-derived context for device identification and response workflows.
+- Publishes the following as device properties in the eyeSight console:
+  - Switch identity (hostname, serial number, model, firmware)
+  - Network attachment context from the SG200 MAC table:
+    - VLAN
+    - Switch interface name (e.g., GE1, GE2, …)
+- Enables Connect-based policies, tags, and automation actions that depend on “where the device is connected” (interface/VLAN) and “what infrastructure reported it” (switch identity).
+
 ![Device Properties in Forescout eyeSight console](docs/properties.png)
 
-## Repository layout (high level)
 
-```
-.
-├── NETGEAR/                                # Netgear Connect app artifacts
-│   ├── app/
-│   │   └── NETGEAR-0.1.1.zip               # Versioned packaged app bundles
-│   └── data/                               # app package files
-│       ├── netgear_ac_poll.py
-│       ├── netgear_ac_test.py
-│       ├── property.conf
-│       └── system.conf
-├── SG200/                                  # SG200 Connect app artifacts
-│   ├── app/
-│   │   └── SG200-0.1.4.zip                 # Versioned packaged app bundles
-│   ├── data/                               # app package files
-│   │   ├── property.conf
-│   │   ├── sg200_poll.py
-│   │   ├── sg200_test.py
-│   │   └── system.conf
-│   └── SG200-0.2.0.zip                     # Versioned packaged app bundles
-├── collector/                              # Collector service + scraper client modules
-│   ├── scrapers/                           # Scraper client modules loaded lazily
-│   │   ├── __init__.py
-│   │   ├── netgear_client.py               # HTTP scraper for Netgear access control list
-│   │   └── sg200_client.py                 # Playwright scraper for SG200 dynamic MAC table
-│   └── collector.py                        # Flask API for SG200 + Netgear
-├── docs/
-│   └── architecture.svg
-├── .gitignore
-├── README.md
-├── SG200-0.2.0.zip                         # Latest app bundles
-└── collector.zip                           # Latest Collector files
+## Components
 
+- Collector service: `collector.py` (Flask app) and SG200 scraper: `scrapers/sg200_client.py` (Playwright-based), downloadable as a **collector.zip** file
+- Cisco SG200 Connect app for Forescout eyeSight, downloadable as a **CiscoSG200ConnectApp.zip** file
 
-```
+---
 
-## Quick start
+## System requirements
 
-1. Install Python 3.8+ and Playwright dependencies (see below).
-2. Download and install collector.zip.  Start the collector (`python collector.py`).
-3. Download the latest SG200-x.x.x.zip app package. Install and Configure the SG200 Connect app to point at the collector.
+Windows:
+- Windows 10/11 or Windows Server 2019+
+- Python 3.10+
+- Network reachability from the collector host to the SG200 management UI
 
-## Collector service
+---
 
-The collector is a Flask API that uses Playwright for SG200 web scraping and HTTP requests for Netgear.
+# Deployment (Windows)
 
-## Installation (Windows & Linux)
+This deployment flow is ordered as follows:
+1) Deploy and run the collector.
+2) Test the collector against your SG200 using CLI.
+3) Only after successful CLI validation, install/configure the Forescout Connect app.
 
-Install the collector on a system that can reach the switches/routers.
-Use Python **3.8+** (3.9+ recommended).
+## Step 1 — Deploy the collector
 
-### Windows (PowerShell)
-Unzip the collector.zip to the home directory of the collector app, then:
+### 1.1 Extract files
+
+Create directories:
+- `C:\SG200Collector\current\`
+- `C:\SG200Collector\logs\`
+
+Extract the collector release zip into `C:\SG200Collector\current\` and confirm:
+- `collector.py`
+- `scrapers\` directory
+
+### 1.2 Create virtual environment and install dependencies
+
+Open PowerShell:
 
 ```powershell
-cd C:\path\to\SG200\collector
-python -m venv .venv
-powershell .\.venv\Scripts\Activate.ps1
-or using CMD:
-.\.venv\Scripts\activate 
+cd C:\SG200Collector\current
+py -m venv venv
+.\venv\Scripts\activate
 python -m pip install --upgrade pip
-python -m pip install flask requests playwright beautifulsoup4
+pip install flask waitress playwright requests beautifulsoup4
 python -m playwright install chromium
 ```
 
-Run the collector:
+### 1.3 Configure request controls (optional)
+
+Create `C:\SG200Collector\current\collector_security.json`:
+
+```json
+{
+  "allowed_ips": ["127.0.0.1", "192.168.0.35"],
+  "token": "replace-with-a-long-random-string"
+}
+```
+
+Operational guidance:
+- The `allowed_ips` list should include the eyeSight appliance(s) that will run the Connect app polling.
+  - In Forescout, these are the appliance(s) selected in the app configuration panel typically labeled “Assign eyeSight Devices”.
+- While validating from an admin workstation, add that workstation’s IP temporarily, or run the CLI tests locally on the collector host using `127.0.0.1`.
+
+### 1.4 Run the collector interactively (initial validation)
+
+Start the collector on localhost:
+
+Windows (PowerShell):
+```powershell
+cd C:\SG200Collector\current
+.\venv\Scripts\activate
+waitress-serve --host=127.0.0.1 --port=8081 collector:app
+```
+
+macOS/Linux (bash/zsh):
+```bash
+cd /path/to/collector
+. venv/bin/activate
+waitress-serve --host=127.0.0.1 --port=8081 collector:app
+```
+
+Verify the collector is reachable (run in a second terminal on the same host):
+
+macOS/Linux (bash/zsh):
+```bash
+curl -fsS "http://127.0.0.1:8081/health"
+```
+
+Windows (PowerShell):
+```powershell
+curl.exe -fsS "http://127.0.0.1:8081/health"
+```
+
+Keep the collector running for Step 2.
+
+---
+
+## Step 2 — Validate switch communication via CLI
+
+This step proves the collector can authenticate to the SG200 and scrape the required pages. Do not proceed to Forescout until these calls succeed.
+
+POST body fields:
+- `ip`: SG200 switch management IP address (the same IP you use in the browser to manage the switch)
+- `user`: SG200 web UI username
+- `pass`: SG200 web UI password
+
+Authentication header:
+- `X-Collector-Token`: must match the `token` value configured in `collector_security.json`
+
+### 2.1 Test system identity
+
+macOS/Linux (bash/zsh):
+```bash
+curl -fsS -X POST "http://127.0.0.1:8081/sg200/system-summary"   -H "Content-Type: application/json"   -H "X-Collector-Token: your-token-here"   -d '{"ip":"192.168.0.221","user":"cisco","pass":"cisco"}'
+```
+
+Windows (PowerShell, one line):
+```powershell
+curl.exe -fsS -X POST "http://127.0.0.1:8081/sg200/system-summary" -H "Content-Type: application/json" -H "X-Collector-Token: your-token-here" -d "{\"ip\":\"192.168.0.221\",\"user\":\"cisco\",\"pass\":\"cisco\"}"
+```
+
+### 2.2 Test MAC table and interface name mapping
+
+macOS/Linux (bash/zsh):
+```bash
+curl -fsS -X POST "http://127.0.0.1:8081/sg200/mac-table"   -H "Content-Type: application/json"   -H "X-Collector-Token: your-token-here"   -d '{"ip":"192.168.0.221","user":"cisco","pass":"cisco"}'
+```
+
+Windows (PowerShell, one line):
+```powershell
+curl.exe -fsS -X POST "http://127.0.0.1:8081/sg200/mac-table" -H "Content-Type: application/json" -H "X-Collector-Token: your-token-here" -d "{\"ip\":\"192.168.0.221\",\"user\":\"cisco\",\"pass\":\"cisco\"}"
+```
+
+Validation checks:
+- Both endpoints return HTTP 200.
+- `/sg200/mac-table` returns entries where `port_index` is an interface label (GE1, GE2, …).
+- `/sg200/system-summary` returns the switch identity fields.
+
+If either endpoint fails:
+- Review the collector console output.
+- Confirm SG200 IP/credentials.
+- Confirm the collector host can reach the SG200 management UI.
+
+---
+
+## Step 3 — Deploy as a Windows Service (NSSM)
+
+After Step 2 succeeds, deploy the collector as a service.
+
+### 3.1 Download and install NSSM
+
+Download NSSM from:
+- https://nssm.cc/download
+
+Extract and place `nssm.exe` in a stable location, for example:
+- `C:\Tools\nssm.exe`
+
+### 3.2 Create a dedicated service account
+
+Playwright/Chromium is typically more reliable under a real user profile than LocalSystem.
+
+Create a local user (example using elevated PowerShell):
+```powershell
+net user sg200svc "StrongPasswordHere" /add
+```
+
+Grant “Log on as a service”:
+1. Run `secpol.msc`
+2. Local Policies → User Rights Assignment
+3. Open “Log on as a service”
+4. Add the user `sg200svc`
+
+NTFS permissions:
+- `C:\SG200Collector\current\` : Read/Execute for `sg200svc`
+- `C:\SG200Collector\logs\` : Modify for `sg200svc`
+
+### 3.3 Install the service
+
+Run PowerShell as Administrator:
 
 ```powershell
-$env:SG200_COLLECTOR_HOST="0.0.0.0"
-$env:SG200_COLLECTOR_PORT="8080"
-# optional
-$env:SG200_COLLECTOR_ALLOWED_IPS="192.168.1.10,192.168.1.11"
-$env:SG200_COLLECTOR_TOKEN="shared-secret"
-
-python collector.py
+C:\Tools\nssm.exe install SG200Collector
 ```
 
-### Linux (bash)
+In the NSSM GUI, set:
 
-```bash
-cd /path/to/SG200/collector
-python3 -m venv .venv
-source .venv/bin/activate
-python -m pip install --upgrade pip
-python -m pip install flask requests playwright beautifulsoup4
-python -m playwright install chromium
+Application
+- Path: `C:\SG200Collector\current\venv\Scripts\python.exe`
+- Startup directory: `C:\SG200Collector\current`
+- Arguments:
+  - `-m waitress --listen=0.0.0.0:8081 collector:app`
+
+I/O
+- Stdout: `C:\SG200Collector\logs\stdout.log`
+- Stderr: `C:\SG200Collector\logs\stderr.log`
+
+Process
+- Enable “Kill process tree”
+
+Then set the service Log On account:
+- Services → SG200Collector → Properties → Log On → `.\sg200svc`
+
+Startup + Recovery:
+- Startup type: Automatic
+- Recovery tab:
+  - Restart the service on failures
+
+Start/stop:
+```powershell
+sc start SG200Collector
+sc stop SG200Collector
 ```
 
-Run the collector:
+### 3.4 Firewall
 
-```bash
-export SG200_COLLECTOR_HOST=0.0.0.0
-export SG200_COLLECTOR_PORT=8080
-# optional
-export SG200_COLLECTOR_ALLOWED_IPS="192.168.1.10,192.168.1.11"
-export SG200_COLLECTOR_TOKEN="shared-secret"
+When you start the collector in an interactive user session (terminal) and bind to 0.0.0.0:8081, Windows Defender Firewall may display the “Windows Defender Firewall has blocked some features of this app” prompt the first time it detects inbound listening/traffic for that executable (often python.exe)
+Do not rely on a Windows prompt to open the port. Create an explicit inbound rule for TCP 8081.
 
-python collector.py
-```
+Example (PowerShell):
+```powershell
+New-NetFirewallRule -DisplayName "SG200 Collector (TCP 8081)" -Direction Inbound -Action Allow -Protocol TCP -LocalPort 8081
 
-## API endpoints
 
-- `POST /sg200/mac-table`
-  - Body:
-    ```json
-    {
-      "ip": "192.168.0.221",
-      "user": "cisco",
-      "pass": "cisco"
-    }
-    ```
-  - Response:
-    ```json
-    {
-      "switch_ip": "192.168.0.221",
-      "entries": [
-        {
-          "switch_ip": "192.168.0.221",
-          "vlan": 1,
-          "mac": "aa:bb:cc:dd:ee:ff",
-          "port_index": 52,
-          "interface": "GE1",
-          "description": "Server"
-        }
-      ]
-    }
-    ```
+---
 
-- `POST /sg200/system-summary`
-  - Body:
-    ```json
-    {
-      "ip": "192.168.0.221",
-      "user": "cisco",
-      "pass": "cisco"
-    }
-    ```
-  - Response:
-    ```json
-    {
-      "switch_ip": "192.168.0.221",
-      "host_name": "GARAGE-SG200",
-      "model_description": "26-port Gigabit Smart Switch",
-      "serial_number": "DNI161702F3"
-    }
-    ```
+## Step 4 — Install and configure the Forescout Connect app
 
-- `POST /netgear/access-control`
-  - Body:
-    ```json
-    {
-      "ip": "192.168.1.7",
-      "user": "admin",
-      "pass": "password"
-    }
-    ```
-  - Response:
-    ```json
-    {
-      "router_ip": "192.168.1.7",
-      "entries": [
-        {
-          "router_ip": "192.168.1.7",
-          "ip": "192.168.1.199",
-          "mac": "00:0c:29:b2:94:c0",
-          "status": "Allowed",
-          "conn_type": "wired",
-          "name": "DESKTOP-EXAMPLE"
-        }
-      ]
-    }
-    ```
+Only proceed after Step 2 succeeds.
 
-## Auth controls (optional)
+### 4.1 Allow unsigned Connect apps (Enterprise Manager)
 
-The collector always runs over HTTP, so you can optionally restrict who can call it.
+This app is unofficial/unsigned. On the Enterprise Manager, enable unsigned app import:
 
-### 1) IP allowlist (collector-side)
-
-Set an environment variable on the **collector host**:
-
-**Windows (PowerShell)**
-```
-$env:SG200_COLLECTOR_ALLOWED_IPS="192.168.1.10,192.168.1.11"
-```
-
-**Linux (bash)**
-```
-export SG200_COLLECTOR_ALLOWED_IPS="192.168.1.10,192.168.1.11"
-```
-
-When set, the collector will only accept requests from those source IPs.
-
-### 2) Shared token (collector-side + Connect app)
-
-**Collector host:** set the environment variable:
-
-**Windows (PowerShell)**
-```
-$env:SG200_COLLECTOR_TOKEN="shared-secret"
-```
-
-**Linux (bash)**
-```
-export SG200_COLLECTOR_TOKEN="shared-secret"
-```
-
-**Connect app:** enter the same value in **Collector Token** (system.conf field
-`connect_ciscosg200_collector_token`). The app sends it as the `X-Collector-Token`
-HTTP header.
-
-If the token is set on the collector but missing/wrong in the request, the
-collector returns HTTP 401.
-
-## Running the collector
-
-From the repo root:
-
-```bash
-export SG200_COLLECTOR_HOST=0.0.0.0
-export SG200_COLLECTOR_PORT=8080
-# optional
-export SG200_COLLECTOR_ALLOWED_IPS="192.168.1.10,192.168.1.11"
-export SG200_COLLECTOR_TOKEN="shared-secret"
-
-python scraper/collector.py
-```
-
-## Forescout Connect apps
-
-### SG200 app
-
-Configuration files live in:
-
-```
-SG200/app/data/
-  system.conf
-  property.conf
-  sg200_test.py
-  sg200_poll.py
-```
-
-Key settings in `system.conf`:
-
-- Collector host / port / token
-- Optional collector token
-- Inventory list of switches (one per line): `ip,username,password`
-
-### Netgear app
-
-Configuration files live in:
-
-```
-NETGEAR/data/
-  system.conf
-  property.conf
-  netgear_ac_test.py
-  netgear_ac_poll.py
-```
-
-## Deploy to Forescout eyeSight (unsigned app)
-
-These Connect app packages are **unsigned**. You must allow unsigned apps on the
-Enterprise Manager (EM) before importing.
-
-### 1) Allow unsigned Connect apps on the EM
-
-On the **Enterprise Manager**:
-
-1. SSH or console in as `cliadmin`.
-2. At the `FS-CLI` prompt, run:
-
-```
+```text
 fstool allow_unsigned_connect_app_install true
 ```
 
-This disables signature validation for all apps you import after running it. It is
-global, so treat it as a **dev-only** setting.
+After importing the app, you can revert enforcement:
 
-When you’re done testing, re-enable enforcement with:
-
-```
+```text
 fstool allow_unsigned_connect_app_install false
 ```
 
-### 2) Import your app in the Console
+### 4.2 Import and configure the app
 
-In the **Forescout Console**:
+High-level:
+1. Import the Connect app package in the Forescout Console.
+2. Configure:
+   - Collector Host and Port (Windows collector host and 8081)
+   - Collector Token (must match `collector_security.json`)
+   - Switch definitions: up to 16 switches can be configured in the app
+3. In “Assign eyeSight Devices”, select the appliance(s) that will run the app.
+4. Enable discovery options and set the interval:
+   - Recommended polling interval: 10 minutes or longer (to reduce scraping load and avoid overlapping sessions).
+5. Run a manual Refresh/Test once and confirm properties populate in eyeSight.
 
-1. Go to **Tools → Options → Connect** (or **Configurations → Connect**, depending on version).
-2. Click **Import**.
-3. Select your app file:
-   - Either a `.eca`, or a `.zip` built per the App Builder guide.
-4. Click **Import** and acknowledge the invalid/missing signature warning.
-6. After import completes, click **Apply**.
+---
 
-Your unsigned app should now appear on the **Apps** tab and be usable for config/policies.
+## Monitoring
 
-## Packaging
-
-The `SG200-*.zip` and `NETGEAR-*.zip` files are packaged Connect apps ready for import.
-
-### Create SG200 Connect app package
-
-From the repo root:
-
-```bash
-cd SG200
-zip -r SG200-0.2.0.zip data signature -x "__MACOSX/*" "*.DS_Store"
+Tail logs:
+```powershell
+Get-Content C:\SG200Collector\logs\stdout.log -Tail 200 -Wait
 ```
 
-### Create Netgear Connect app package
+---
 
-From the repo root:
+## Log retention (24 hours)
 
-```bash
-cd NETGEAR
-zip -r NETGEAR-0.1.1.zip data signature -x "__MACOSX/*" "*.DS_Store"
+Use a Scheduled Task to delete log files older than 24 hours:
+
+```powershell
+powershell.exe -NoProfile -Command ^
+  "Get-ChildItem 'C:\SG200Collector\logs\*.log' -File | Where-Object { $_.LastWriteTime -lt (Get-Date).AddHours(-24) } | Remove-Item -Force"
 ```
-
-Adjust the version number in the filename to match the `system.conf` version and
-your desired release tag.
-
-## Notes
-
-- SG200 scraping is HTTP-based because some firmware builds do not support SNMP.
-- The Playwright scraper discovers the `csbXXXXXX` prefix after login, then directly loads
-  the dynamic MAC table page and parses VLAN/MAC/port index from hidden form fields.
