@@ -1,4 +1,4 @@
-# SG200 Collector + Forescout Connect Apps
+# SG200 Collector + Forescout Connect App
 
 This repository contains:
 
