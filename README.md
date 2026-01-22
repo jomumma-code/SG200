@@ -10,6 +10,8 @@ This repository contains:
 
 ![Architecture diagram](docs/architecture.svg)
 
+![Device Properties in Forescout eyeSight console](docs/properties.png)
+
 ## Repository layout (high level)
 
 ```
