@@ -111,18 +111,11 @@ cd C:\SG200Collector\current
 waitress-serve --host=127.0.0.1 --port=8081 collector:app
 ```
 
-macOS/Linux (bash/zsh):
-```bash
-cd /path/to/collector
-. venv/bin/activate
-waitress-serve --host=127.0.0.1 --port=8081 collector:app
-```
+Verify the collector is reachable (run in a second terminal on the same host or from another host):
 
-Verify the collector is reachable (run in a second terminal on the same host):
-
-macOS/Linux (bash/zsh):
+macOS/Linux (bash/zsh) remotely:
 ```bash
-curl -fsS "http://127.0.0.1:8081/health"
+curl -fsS "http://COLLECTOR_IP:8081/health"
 ```
 
 Windows (PowerShell):
@@ -150,7 +143,7 @@ Authentication header:
 
 macOS/Linux (bash/zsh):
 ```bash
-curl -fsS -X POST "http://127.0.0.1:8081/sg200/system-summary"   -H "Content-Type: application/json"   -H "X-Collector-Token: your-token-here"   -d '{"ip":"192.168.0.221","user":"cisco","pass":"cisco"}'
+curl -fsS -X POST "http://COLLECTOR_IP:8081/sg200/system-summary"   -H "Content-Type: application/json"   -H "X-Collector-Token: your-token-here"   -d '{"ip":"192.168.0.221","user":"cisco","pass":"cisco"}'
 ```
 
 Windows (PowerShell, one line):
@@ -162,7 +155,7 @@ curl.exe -fsS -X POST "http://127.0.0.1:8081/sg200/system-summary" -H "Content-T
 
 macOS/Linux (bash/zsh):
 ```bash
-curl -fsS -X POST "http://127.0.0.1:8081/sg200/mac-table"   -H "Content-Type: application/json"   -H "X-Collector-Token: your-token-here"   -d '{"ip":"192.168.0.221","user":"cisco","pass":"cisco"}'
+curl -fsS -X POST "http://COLLECTOR_IP:8081/sg200/mac-table"   -H "Content-Type: application/json"   -H "X-Collector-Token: your-token-here"   -d '{"ip":"192.168.0.221","user":"cisco","pass":"cisco"}'
 ```
 
 Windows (PowerShell, one line):
