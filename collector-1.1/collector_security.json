@@ -1,0 +1,7 @@
+
+## edit the details below, then delete this line to activate security features, then restart collector.py ##
+
+{
+  "allowed_ips": ["192.168.0.45", "192.168.1.201", "192.168.1.200"],
+  "token": "test-token"
+}
