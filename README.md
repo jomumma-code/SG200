@@ -246,8 +246,8 @@ Download NSSM from:
 - https://nssm.cc/download
 - https://github.com/HandSonic/nssm/releases/tag/2.24
 
-Extract and place `nssm.exe` in a stable location, for example:
-- `C:\Tools\nssm.exe`
+Extract and place the appropriate `nssm.exe` in a stable location, for example:
+- `C:\SG200Collector\nssm.exe`
 
 ### 3.2 Create a dedicated service account
 
@@ -267,7 +267,22 @@ Grant “Log on as a service”:
 NTFS permissions:
 - `C:\SG200Collector\current\` : Read/Execute for `sg200svc`
 - `C:\SG200Collector\logs\` : Modify for `sg200svc`
+  
+You can set them with this script:
 
+```powershell
+$acct = "$env:COMPUTERNAME\sg200svc"
+
+# Read & execute for collector code/config (current)
+icacls "C:\SG200Collector\current" /grant "$acct:(OI)(CI)RX" /T
+
+# Modify for logs directory
+icacls "C:\SG200Collector\logs" /grant "$acct:(OI)(CI)M" /T
+
+# Verify
+icacls "C:\SG200Collector\current"
+icacls "C:\SG200Collector\logs"
+```
 ### 3.3 Install the service
 
 Run PowerShell as Administrator:
