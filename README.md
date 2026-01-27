@@ -76,6 +76,7 @@ On Windows (PowerShell):
 cd C:\SG200Collector\current
 py -m venv venv
 .\venv\Scripts\activate
+(it may be necessary to "Set-ExecutionPolicy Bypass -Scope Process -Force")
 python -m pip install --upgrade pip
 pip install flask waitress playwright requests beautifulsoup4
 python -m playwright install chromium
