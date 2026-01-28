@@ -292,34 +292,61 @@ Run PowerShell as Administrator:
 C:\SG200Collector\nssm.exe install SG200Collector
 ```
 
-In the NSSM GUI, set:
+In the **NSSM service installer** window, configure these tabs:
 
-Application
-- Path: `C:\SG200Collector\current\venv\Scripts\python.exe`
-- Startup directory: `C:\SG200Collector\current`
-- Arguments:
-  - `-m waitress --listen=0.0.0.0:8081 collector:app`
+**Application**
 
-I/O
-- Stdout: `C:\SG200Collector\logs\stdout.log`
-- Stderr: `C:\SG200Collector\logs\stderr.log`
+* **Path:** `C:\SG200Collector\current\venv\Scripts\python.exe`
+* **Startup directory:** `C:\SG200Collector\current`
+* **Arguments:** `-m waitress --listen=0.0.0.0:8081 collector:app`
 
-Process
-- Enable “Kill process tree”
+**Details**
 
-Then set the service Log On account:
-- Services → SG200Collector → Properties → Log On → `.\sg200svc`
+* **Display name:** `SG200Collector` (or a friendlier name like “SG200 Collector”)
+* **Startup type:** **Automatic**
 
-Startup + Recovery:
-- Startup type: Automatic
-- Recovery tab:
-  - Restart the service on failures
+
+**Log on**
+
+* Select **This account**
+* **Account:** `.\sg200svc`
+* Enter and confirm the password for `sg200svc`
+
+**Shutdown**
+
+* Ensure **Kill process tree** is enabled (important for Playwright/Chromium child processes)
+
+**Exit** (restart behavior)
+
+* **Action to take when application exits:** **Restart**
+* Leave **Throttle** at default unless you have a reason to change it (prevents tight restart loops)
+* (Optional) Set **Restart delay** (ms) if you want a pause before restart (e.g., 10000 for 10s)
+
+**I/O** (logs)
+
+* **Output (stdout):** `C:\SG200Collector\logs\stdout.log`
+* **Error (stderr):** `C:\SG200Collector\logs\stderr.log`
+  (The I/O tab is explicitly for redirecting stdout/stderr to files.) 
+
+**Rotation** (optional but recommended if you want rollover on restarts)
+
+* Check **Rotate files** if you want NSSM to rename existing stdout/stderr logs when the service (re)starts
+* Leave **Rotate while running (online rotation)** off
+
+Then click **Install service**.
 
 Start/stop:
+
 ```powershell
 sc start SG200Collector
 sc stop SG200Collector
 ```
+
+Notes:
+
+* Don’t move/delete `nssm.exe` after installation; Windows stores the path to it in the service configuration. ([Windows Forum][3])
+* If you need to change settings later: `C:\SG200Collector\nssm.exe edit SG200Collector` (reopens the same GUI). 
+
 
 
 
