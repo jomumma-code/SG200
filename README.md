@@ -161,6 +161,14 @@ Authentication header:
 
 ### 2.1 Test system identity - examples
 
+**Windows** (PowerShell) without auth:
+
+```
+$uri = 'http://127.0.0.1:8081/sg200/system-summary'
+$payload = @{ ip='192.168.0.221'; user='cisco'; pass='cisco' } | ConvertTo-Json -Compress
+Invoke-RestMethod -Method Post -Uri $uri -ContentType 'application/json' -Body $payload
+
+```
 
 **Windows** (PowerShell) with auth:
 ```powershell
@@ -169,15 +177,6 @@ $payload = @{ ip='192.168.0.221'; user='cisco'; pass='cisco' } | ConvertTo-Json 
 $headers = @{ 'X-Collector-Token' = 'your-token-here' }
 Invoke-RestMethod -Method Post -Uri $uri -ContentType 'application/json' -Headers $headers -Body $payload
 ````
-
-without auth:
-
-```
-$uri = 'http://127.0.0.1:8081/sg200/system-summary'
-$payload = @{ ip='192.168.0.221'; user='cisco'; pass='cisco' } | ConvertTo-Json -Compress
-Invoke-RestMethod -Method Post -Uri $uri -ContentType 'application/json' -Body $payload
-
-```
 
 **macOS/Linux** (bash/zsh) with auth:
 
@@ -214,10 +213,8 @@ expected response looks like:
 **Windows** (PowerShell) with auth:
 
 ```powershell
-$uri = 'http://127.0.0.1:8081/sg200/mac-table'
-$payload = @{ ip='192.168.0.221'; user='cisco'; pass='cisco' } | ConvertTo-Json -Compress
-$headers = @{ 'X-Collector-Token' = 'your-token-here' }
-Invoke-RestMethod -Method Post -Uri $uri -ContentType 'application/json' -Headers $headers -Body $payload
+$uri='http://127.0.0.1:8081/sg200/mac-table';$ip=Read-Host 'IP';$user=Read-Host 'User';$passS=Read-Host 'Pass' -AsSecureString;$tokS=Read-Host 'Token' -AsSecureString;$pPtr=[Runtime.InteropServices.Marshal]::SecureStringToBSTR($passS);$pass=[Runtime.InteropServices.Marshal]::PtrToStringBSTR($pPtr);[Runtime.InteropServices.Marshal]::ZeroFreeBSTR($pPtr);$tPtr=[Runtime.InteropServices.Marshal]::SecureStringToBSTR($tokS);$token=[Runtime.InteropServices.Marshal]::PtrToStringBSTR($tPtr);[Runtime.InteropServices.Marshal]::ZeroFreeBSTR($tPtr);$body=@{ip=$ip;user=$user;pass=$pass}|ConvertTo-Json -Compress;$headers=@{'X-Collector-Token'=$token};(Invoke-RestMethod -Method Post -Uri $uri -ContentType 'application/json' -Headers $headers -Body $body).entries | Select-Object mac,port_index,vlan,switch_ip | Format-Table -AutoSize
+
 ```
 
 **macOS/Linux** (bash/zsh) with auth:
@@ -249,7 +246,8 @@ If either endpoint fails:
 ## Step 3 — Deploy with Windows Installer
 
 Download the SG200CollectorSetup.exe and run it as Administrator to install the collector, python, and Chromium components.
-
+To enable allowlist ot token auth, copy **C:\Program Files\SG200Collector\config\collector_security.json** to **C:\Program Files\SG200Collector\app**, edit it then restart collector services with **sc.exe stop SG200Collector** / **sc.exe start SG200Collector**
+Refer to 
 
 ---
 
