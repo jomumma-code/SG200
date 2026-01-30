@@ -208,7 +208,9 @@ If either endpoint fails:
 ## Step 3 — Production Deployment with Windows Installer (skip in test environments)
 
 Download the SG200CollectorSetup.exe and run it as Administrator to install the collector, python, and Chromium components.
-To enable allowlist ot token auth, copy **C:\Program Files\SG200Collector\config\collector_security.json** to **C:\Program Files\SG200Collector\app**, edit it then restart collector services with **sc.exe stop SG200Collector** / **sc.exe start SG200Collector**
+To enable allowlist ot token auth, copy 
+**C:\Program Files\SG200Collector\config\collector_security.json** to **C:\Program Files\SG200Collector\app** 
+edit it then restart collector services with **sc.exe stop SG200Collector** / **sc.exe start SG200Collector**
 Refer to **Step 2** for testing.
 
 ---
