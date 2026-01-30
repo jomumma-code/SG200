@@ -42,7 +42,7 @@
 
   <rect x="120" y="280" width="740" height="170" class="box"/>
   <text x="150" y="315" class="title">Data Flow</text>
-  <text x="150" y="345" class="text">1) Connect app sends inventory (ip/user/pass) to Collector</text>
+  <text x="150" y="345" class="text">1) Connect app sends switch credentials (ip/user/pass) to Collector</text>
   <text x="150" y="370" class="text">2) Collector logs into SG200 web UI and scrapes pages</text>
   <text x="150" y="395" class="text">3) Collector returns MAC/VLAN/port + system summary metadata</text>
   <text x="150" y="420" class="text">4) Connect app reports endpoints + properties to Forescout</text>
