@@ -1,0 +1,687 @@
+#!/usr/bin/env python3
+"""
+Library to scrape data from a Cisco SG200 (HTTP-only management UI).
+
+Public API:
+    fetch_mac_table(switch_ip, username, password) -> List[dict]
+    fetch_system_summary(switch_ip, username, password) -> Dict[str, str]
+
+Implementation notes:
+- Uses Playwright (headless Chromium) because SG200 auth and navigation are JS/frameset-based.
+- Uses the csbXXXXXX URL prefix detected after login.
+- Also supports the "Nikola" UI family (nikola_main.html) with no csb prefix.
+"""
+
+import re
+import json
+from dataclasses import dataclass, asdict
+from typing import Dict, List, Optional, Tuple
+import xml.etree.ElementTree as ET
+
+from bs4 import BeautifulSoup
+from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
+
+NAV_TIMEOUT_MS = 15000  # 15 seconds
+
+
+@dataclass
+class MacEntry:
+    vlan: int
+    mac: str
+    port_index: int
+    switch_ip: str
+
+
+# -----------------------------
+# Core helpers
+# -----------------------------
+
+def _perform_login(page, username: str, password: str) -> None:
+    """
+    Find a frame with a password field, fill username/password, submit.
+
+    SG200 firmwares commonly render login inside a frame.
+    """
+    login_frame = None
+    for frame in page.frames:
+        try:
+            pw = frame.query_selector("input[type='password']")
+        except Exception:
+            pw = None
+        if pw is not None:
+            login_frame = frame
+            break
+
+    if login_frame is None:
+        # Already logged in or different firmware behavior
+        return
+
+    pw = login_frame.query_selector("input[type='password']")
+    if pw is None:
+        raise RuntimeError("Password field not found in login frame")
+
+    user = login_frame.query_selector("input[type='text'], input[type='email']")
+    if user is None:
+        user = login_frame.query_selector("input:not([type='password'])")
+    if user is None:
+        raise RuntimeError("Could not locate username field on login page")
+
+    user.fill(username)
+    pw.fill(password)
+
+    btn = login_frame.query_selector("input[type='submit'], button, input[type='button']")
+    if btn is not None:
+        btn.click()
+    else:
+        pw.press("Enter")
+
+    # Allow frameset to load after auth
+    page.wait_for_timeout(4000)
+
+
+def _detect_csb_prefix(page) -> str:
+    """
+    After login, inspect frame URLs to find /csbXXXXXX/.
+    """
+    pattern = re.compile(r"/(csb[0-9a-fA-F]+)/")
+
+    for frame in page.frames:
+        m = pattern.search(frame.url or "")
+        if m:
+            return m.group(1)
+
+    m = pattern.search(page.url or "")
+    if m:
+        return m.group(1)
+
+    raise RuntimeError("Could not detect csbXXXXXX prefix after login")
+
+def _detect_ui_mode(context, page, switch_ip: str) -> Tuple[str, str]:
+    """
+    Detect which SG200 web UI family is in use after login.
+
+    Returns:
+        (mode, prefix)
+
+    - mode="csb": URLs are under /csbXXXXXX/ and prefix will be "csbXXXXXX"
+    - mode="nikola": URLs are root-based (e.g., /nikola_main.html) and prefix will be ""
+    """
+    try:
+        prefix = _detect_csb_prefix(page)
+        return "csb", prefix
+    except Exception:
+        pass
+
+    # Try Nikola landing page using the authenticated request context (cookies/session).
+    try:
+        resp = context.request.get(f"http://{switch_ip}/nikola_main.html", timeout=NAV_TIMEOUT_MS)
+        if resp and resp.ok:
+            try:
+                txt = resp.text() or ""
+            except Exception:
+                txt = ""
+            if "nikola_main" in txt.lower():
+                return "nikola", ""
+    except Exception:
+        pass
+
+    # Last-resort heuristics: current URL/content markers.
+    try:
+        if "nikola" in (page.url or "").lower():
+            return "nikola", ""
+    except Exception:
+        pass
+    try:
+        if "nikola" in (page.content() or "").lower():
+            return "nikola", ""
+    except Exception:
+        pass
+
+    raise RuntimeError("Unsupported SG200 web UI after login (no csbXXXXXX prefix and Nikola UI not detected).")
+
+
+def _normalize_port_label(label: str) -> str:
+    """
+    Normalize UI port strings to a consistent human-friendly form.
+
+    Examples:
+        "g1"  -> "GE1"
+        "ge10" -> "GE10"
+    """
+    s = (label or "").strip()
+    if not s:
+        return s
+    m = re.match(r"^(?:g|ge)(\d+)$", s, flags=re.IGNORECASE)
+    if m:
+        return f"GE{m.group(1)}"
+    return s
+
+
+def _normalize_mac_any(mac: str) -> str:
+    s = (mac or "").strip().lower()
+    if not s:
+        return s
+    # Already colon-delimited?
+    if ":" in s:
+        parts = s.split(":")
+        if len(parts) == 6 and all(len(p) == 2 for p in parts):
+            return ":".join(p.zfill(2) for p in parts)
+    # Remove separators and format as xx:xx:...
+    cleaned = re.sub(r"[^0-9a-f]", "", s)
+    return _format_mac(cleaned)
+
+
+def _parse_dynamic_mac_table_nikola(html: str, switch_ip: str) -> List[dict]:
+    """
+    Parse Dynamic Address Table for the Nikola UI family (AddressTablesDynamicArray.html).
+
+    The table rows are embedded as a JS array named 'arraydata_3_1', used by DataTables.
+    Column order (from NikolaGlobalJS.js):
+        [0]=If(hidden), [1]=VLAN ID, [2]=MAC, [3]=If(visible), [4]=Type(hidden), [5]=blank
+    """
+    if not html:
+        return []
+
+    m = re.search(r"var\s+arraydata_3_1\s*=\s*\[(.*?)\];\s*arraydata_3_1\.pop\(\);", html, flags=re.S)
+    if not m:
+        return []
+
+    body = m.group(1).strip()
+    # Turn the JS array fragment into valid JSON.
+    json_text = "[" + body + "]"
+    json_text = re.sub(r",\s*\]", "]", json_text)
+
+    try:
+        rows = json.loads(json_text)
+    except Exception:
+        return []
+
+    out: List[dict] = []
+    for row in rows:
+        if not isinstance(row, list) or len(row) < 4:
+            continue
+
+        vlan_raw = row[1]
+        mac_raw = row[2]
+        if_raw = row[3] or row[0]
+
+        try:
+            vlan = int(str(vlan_raw).strip())
+        except Exception:
+            continue
+
+        mac = _normalize_mac_any(str(mac_raw))
+        if not mac:
+            continue
+
+        port_index = _normalize_port_label(str(if_raw))
+
+        out.append(
+            {
+                "switch_ip": switch_ip,
+                "vlan": vlan,
+                "mac": mac,
+                "port_index": port_index,
+            }
+        )
+
+    return out
+
+
+def _parse_system_summary_nikola(html: str) -> Dict[str, str]:
+    """
+    Parse System Summary for the Nikola UI family (SetupSystemSummary.html).
+
+    These pages typically expose values in hidden inputs named like:
+        v_1_5_1  (System Name)
+        v_1_2_1  (System Description)
+        v_1_15_1 (Serial Number)
+        v_1_15_2 (Firmware Version)
+    """
+    soup = BeautifulSoup(html or "", "html.parser")
+
+    def _v(name: str) -> Optional[str]:
+        return _get_input_value(soup, name)
+
+    # Direct names (observed across multiple customer HARs).
+    host = _v("v_1_5_1")
+    descr = _v("v_1_2_1")
+    serial = _v("v_1_15_1")
+    fw = _v("v_1_15_2")
+
+    # Label-based fallback (in case numeric IDs differ across firmwares).
+    if not (host and descr and serial and fw):
+        pairs = re.findall(r'xeData\.xeleName_(\d+_\d+_\d+)\s*=\s*"([^"]+)"', html or "")
+        label_to_id = {}
+        for ident, lab in pairs:
+            norm = (lab or "").strip().rstrip(":").lower()
+            if norm and norm != "dummy":
+                label_to_id[norm] = ident
+
+        def _by_label(*candidates: str) -> Optional[str]:
+            for cand in candidates:
+                key = (cand or "").strip().rstrip(":").lower()
+                ident = label_to_id.get(key)
+                if ident:
+                    return _v(f"v_{ident}")
+            return None
+
+        host = host or _by_label("System Name", "Host Name")
+        descr = descr or _by_label("System Description", "Device Description")
+        serial = serial or _by_label("Serial Number")
+        fw = fw or _by_label("Firmware Version", "Software Version")
+
+    out: Dict[str, str] = {}
+    if host:
+        out["host_name"] = host.strip()
+    if descr:
+        out["model_description"] = " ".join(descr.replace("\xa0", " ").split())
+    if fw:
+        out["firmware_version"] = fw.strip()
+    if serial:
+        out["serial_number"] = serial.strip()
+
+    # Extra identifiers (safe for downstream consumers that ignore unknown keys).
+    hw = _v("v_1_2_8")  # Hardware Type ID (often "SG 200-08")
+    if hw:
+        out["hardware_type_id"] = hw.strip()
+    pid = _v("v_1_22_1")  # Product ID (often "SLM2008T")
+    if pid:
+        out["product_id"] = pid.strip()
+
+    return out
+
+
+def _format_mac(mac_hex: str) -> str:
+    mac_hex = (mac_hex or "").strip().lower()
+    if len(mac_hex) == 12 and all(c in "0123456789abcdef" for c in mac_hex):
+        return ":".join(mac_hex[i:i + 2] for i in range(0, 12, 2))
+    if len(mac_hex) % 2 == 0 and len(mac_hex) >= 12:
+        return ":".join(mac_hex[i:i + 2] for i in range(0, len(mac_hex), 2))
+    return mac_hex
+
+
+def _parse_dynamic_mac_table(html: str, switch_ip: str) -> List[MacEntry]:
+    """
+    Parse VLAN / MAC / port entries from the Dynamic MAC page HTML.
+    """
+    soup = BeautifulSoup(html or "", "html.parser")
+    inputs = soup.find_all("input")
+
+    vlan_by_idx: Dict[str, int] = {}
+    mac_by_idx: Dict[str, str] = {}
+    port_by_idx: Dict[str, int] = {}
+
+    for inp in inputs:
+        name = inp.get("name")
+        if not name:
+            continue
+        value = (inp.get("value") or "").strip()
+
+        if name.startswith("dot1qFdbId$repeat?"):
+            idx = name.split("?", 1)[1]
+            try:
+                vlan_by_idx[idx] = int(value)
+            except ValueError:
+                continue
+
+        elif name.startswith("dot1qTpFdbAddress$repeat?"):
+            idx = name.split("?", 1)[1]
+            mac_by_idx[idx] = value
+
+        elif name.startswith("dot1qTpFdbPort$repeat?"):
+            idx = name.split("?", 1)[1]
+            try:
+                port_by_idx[idx] = int(value)
+            except ValueError:
+                continue
+
+    entries: List[MacEntry] = []
+    for idx in sorted(mac_by_idx.keys(), key=lambda x: int(x)):
+        mac_hex = mac_by_idx.get(idx)
+        vlan = vlan_by_idx.get(idx)
+        port_index = port_by_idx.get(idx)
+
+        if not mac_hex or vlan is None or port_index is None:
+            continue
+
+        entries.append(
+            MacEntry(
+                vlan=vlan,
+                mac=_format_mac(mac_hex),
+                port_index=port_index,
+                switch_ip=switch_ip,
+            )
+        )
+
+    return entries
+
+def _parse_portdb_xml(xml_text: str) -> Dict[int, str]:
+    """
+    Parse /device/portDB.xml and return a mapping of ifIndex -> portName.
+    """
+    out: Dict[int, str] = {}
+    if not xml_text:
+        return out
+
+    try:
+        root = ET.fromstring(xml_text)
+    except Exception:
+        return out
+
+    for port in root.findall(".//port"):
+        try:
+            if_index_el = port.find("ifIndex")
+            port_name_el = port.find("portName")
+            if if_index_el is None or port_name_el is None:
+                continue
+            if_index = int((if_index_el.text or "").strip())
+            port_name = (port_name_el.text or "").strip()
+            if port_name:
+                out[if_index] = port_name
+        except Exception:
+            continue
+    return out
+
+
+# -----------------------------
+# System Summary discovery + parsing
+# -----------------------------
+
+def _looks_like_system_summary(html: str) -> bool:
+    """
+    SG200 System Summary / System Information pages are heavily tokenized.
+    This heuristic checks for stable hidden input field names observed in HAR.
+    """
+    if not html:
+        return False
+    # Serial number / firmware version are very stable across SG200 family pages.
+    return ("rlPhdUnitGenParamSerialNum$repeat?1" in html) or ("rlPhdUnitGenParamSwVer$repeat?1" in html)
+
+
+def _get_input_value(soup: BeautifulSoup, name: str) -> Optional[str]:
+    inp = soup.find("input", {"name": name})
+    if not inp:
+        return None
+    val = inp.get("value")
+    if val is None:
+        return None
+    val = str(val).strip()
+    return val if val != "" else None
+
+def _extract_default_value(vt_value: str) -> Optional[str]:
+    """
+    Some SG200 pages encode values inside a *$VT field, e.g.:
+        "Type=100;...;Default value=DNI161702F3"
+    """
+    if not vt_value:
+        return None
+    m = re.search(r"Default value=([^;]+)", vt_value)
+    if not m:
+        return None
+    return m.group(1).strip() or None
+
+
+def _parse_system_summary(html: str) -> Dict[str, str]:
+    """
+    Parse system summary using hidden inputs (more robust than reading UI labels).
+
+    This page varies across SG200 firmwares; we prefer stable hidden fields that exist on
+    system_general_description_Sx200_m.htm (observed in HAR captures).
+    """
+    soup = BeautifulSoup(html or "", "html.parser")
+    out: Dict[str, str] = {}
+
+    # SNMP-ish fields (present on multiple pages)
+    sys_name = _get_input_value(soup, "sysName")
+    sys_contact = _get_input_value(soup, "sysContact")
+    sys_location = _get_input_value(soup, "sysLocation")
+
+    if sys_name:
+        out["host_name"] = sys_name.strip()
+    if sys_contact:
+        out["system_contact"] = sys_contact.strip()
+    if sys_location:
+        out["system_location"] = sys_location.strip()
+
+    # Model description (sysDescr$scalar observed in HAR)
+    model = (
+        _get_input_value(soup, "sysDescr$scalar")
+        or _get_input_value(soup, "sysDescr")
+        or _get_input_value(soup, "rlPhdUnitGenParamDeviceDescr$repeat?1")
+    )
+    if model:
+        out["model_description"] = " ".join(model.replace("\xa0", " ").split())
+
+    # Firmware version (observed as rndImage1Version$repeat?1 / rndImage2Version$repeat?1)
+    fw = (
+        _get_input_value(soup, "rndImage1Version$repeat?1")
+        or _get_input_value(soup, "rndImage2Version$repeat?1")
+        or _get_input_value(soup, "rlPhdUnitGenParamSwVer$repeat?1")
+    )
+    if fw:
+        out["firmware_version"] = fw.strip()
+
+    # Serial number (observed in rlPhdUnitGenParamSerialNum$VT as "Default value=...")
+    serial = _get_input_value(soup, "rlPhdUnitGenParamSerialNum$repeat?1") or _extract_default_value(
+        _get_input_value(soup, "rlPhdUnitGenParamSerialNum$VT") or ""
+    )
+    if serial:
+        out["serial_number"] = serial.strip()
+
+    return out
+
+
+def _find_system_summary_html(page, switch_ip: str, prefix: str) -> Optional[str]:
+    """
+    Locate the System Summary page HTML.
+
+    Primary clue (from HAR): the System Summary content lives at:
+        /<prefix>/sysinfo/system_general_description_Sx200_m.htm
+    """
+    candidates = [
+        # HAR-observed "System Summary" payload carrier for SG200 family
+        f"http://{switch_ip}/{prefix}/sysinfo/system_general_description_Sx200_m.htm",
+        f"http://{switch_ip}/{prefix}/sysinfo/system_general_description_Sx200.htm",
+
+        # Other plausible variants (seen across small business firmwares)
+        f"http://{switch_ip}/{prefix}/sysinfo/system_general_description_m.htm",
+        f"http://{switch_ip}/{prefix}/sysinfo/system_general_description.htm",
+        f"http://{switch_ip}/{prefix}/sysinfo/system_information_m.htm",
+        f"http://{switch_ip}/{prefix}/sysinfo/system_information.htm",
+
+        # Older attempts
+        f"http://{switch_ip}/{prefix}/sysinfo/system_summary_m.htm",
+        f"http://{switch_ip}/{prefix}/sysinfo/system_summary.htm",
+        f"http://{switch_ip}/{prefix}/sysinfo/systemSummary.htm",
+        f"http://{switch_ip}/{prefix}/Status/system_summary_m.htm",
+        f"http://{switch_ip}/{prefix}/Status/system_summary.htm",
+    ]
+
+    attempts: List[str] = []
+
+    # 1) Try visiting home to populate frames
+    home_url = f"http://{switch_ip}/{prefix}/home.htm"
+    try:
+        page.goto(home_url, wait_until="domcontentloaded", timeout=NAV_TIMEOUT_MS)
+    except Exception:
+        pass
+
+    # 2) Check any already-loaded frame contents
+    try:
+        for i, fr in enumerate(page.frames):
+            try:
+                html = fr.content()
+            except Exception:
+                continue
+            if _looks_like_system_summary(html):
+                return html
+    except Exception:
+        pass
+
+    # 3) Try direct candidate URLs
+    for url in candidates:
+        try:
+            resp = page.goto(url, wait_until="domcontentloaded", timeout=NAV_TIMEOUT_MS)
+            status = getattr(resp, "status", None)
+            attempts.append(f"{url} -> status={status}")
+        except PlaywrightTimeoutError:
+            attempts.append(f"{url} -> timeout")
+        except Exception as e:
+            attempts.append(f"{url} -> error={type(e).__name__}: {e}")
+            continue
+
+        try:
+            html = page.content()
+        except Exception:
+            html = ""
+
+        if _looks_like_system_summary(html):
+            return html
+    return None
+
+
+# -----------------------------
+# Public API
+# -----------------------------
+
+def fetch_mac_table(switch_ip: str, username: str, password: str) -> List[dict]:
+    """
+    Scrape the dynamic MAC table and return a list of dicts:
+
+        [
+          {"switch_ip": "192.168.0.221", "vlan": 1, "mac": "aa:bb:...", "port_index": "GE1"},
+          ...
+        ]
+
+    Notes:
+    - The Dynamic Addresses page stores the raw port index in hidden fields (dot1qTpFdbPort$repeat?X).
+      The UI renders the human-friendly interface name (GE1/GE2/...) by looking up port names from
+      device/portDB.xml. We replicate this by fetching portDB.xml (authenticated) and mapping ifIndex->portName.
+    - If port name resolution fails, port_index will fall back to the raw numeric index as a string.
+    """
+    base_http_url = f"http://{switch_ip}/"
+
+    result: List[dict] = []
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        context = browser.new_context(ignore_https_errors=True)
+        page = context.new_page()
+
+        try:
+            try:
+                page.goto(base_http_url, wait_until="domcontentloaded", timeout=NAV_TIMEOUT_MS)
+            except PlaywrightTimeoutError:
+                pass
+
+            _perform_login(page, username, password)
+            page.wait_for_timeout(3000)
+
+            mode, prefix = _detect_ui_mode(context, page, switch_ip)
+
+            if mode == "csb":
+                # Fetch authenticated portDB.xml to map ifIndex -> portName (e.g., 73 -> GE1).
+                port_name_by_ifindex: Dict[int, str] = {}
+                try:
+                    portdb_url = f"http://{switch_ip}/{prefix}/device/portDB.xml?Filter:(ifOperStatus!=6)"
+                    resp = context.request.get(portdb_url, timeout=NAV_TIMEOUT_MS)
+                    if resp and resp.ok:
+                        xml_text = resp.text()
+                        port_name_by_ifindex = _parse_portdb_xml(xml_text)
+                except Exception:
+                    port_name_by_ifindex = {}
+
+                # Load Dynamic Addresses page and parse MAC entries.
+                dyn_url = f"http://{switch_ip}/{prefix}/Adrs_tbl/bridg_frdData_dynamicAddress_m.htm"
+                try:
+                    page.goto(dyn_url, wait_until="domcontentloaded", timeout=NAV_TIMEOUT_MS)
+                except PlaywrightTimeoutError:
+                    pass
+
+                dyn_html = page.content()
+                entries = _parse_dynamic_mac_table(dyn_html, switch_ip)
+
+                for e in entries:
+                    raw = e.port_index
+                    name = port_name_by_ifindex.get(raw)
+                    port_index = (name or str(raw)).strip()
+                    result.append(
+                        {
+                            "switch_ip": e.switch_ip,
+                            "vlan": e.vlan,
+                            "mac": e.mac,
+                            "port_index": port_index,
+                        }
+                    )
+
+            else:
+                # Nikola UI family: Dynamic MAC data is embedded as JS array in AddressTablesDynamicArray.html
+                dyn_url = f"http://{switch_ip}/AddressTablesDynamicArray.html"
+                try:
+                    page.goto(dyn_url, wait_until="domcontentloaded", timeout=NAV_TIMEOUT_MS)
+                except PlaywrightTimeoutError:
+                    pass
+
+                dyn_html = page.content()
+                result.extend(_parse_dynamic_mac_table_nikola(dyn_html, switch_ip))
+
+        finally:
+            try:
+                browser.close()
+            except Exception:
+                pass
+
+    return result
+
+
+def fetch_system_summary(switch_ip: str, username: str, password: str) -> Dict[str, str]:
+    """
+    Scrape the system summary page and return a dictionary of fields.
+
+    On failure, raises a RuntimeError.
+    """
+    base_http_url = f"http://{switch_ip}/"
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        context = browser.new_context(ignore_https_errors=True)
+        page = context.new_page()
+
+        try:
+            try:
+                page.goto(base_http_url, wait_until="domcontentloaded", timeout=NAV_TIMEOUT_MS)
+            except PlaywrightTimeoutError:
+                pass
+
+            _perform_login(page, username, password)
+            page.wait_for_timeout(3000)
+
+            mode, prefix = _detect_ui_mode(context, page, switch_ip)
+
+            if mode == "csb":
+                html = _find_system_summary_html(page, switch_ip, prefix)
+            else:
+                # Nikola UI family: System Summary is served as SetupSystemSummary.html (root-based).
+                sys_url = f"http://{switch_ip}/SetupSystemSummary.html"
+                try:
+                    page.goto(sys_url, wait_until="domcontentloaded", timeout=NAV_TIMEOUT_MS)
+                except PlaywrightTimeoutError:
+                    pass
+                html = page.content()
+
+        finally:
+            try:
+                browser.close()
+            except Exception:
+                pass
+
+    if not html:
+        raise RuntimeError("Unable to locate System Summary page after login.")
+
+    if mode == "nikola":
+        data = _parse_system_summary_nikola(html)
+    else:
+        data = _parse_system_summary(html)
+    data["switch_ip"] = switch_ip
+    return data
